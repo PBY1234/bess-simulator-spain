@@ -177,18 +177,42 @@ function proxyPrice(spotPrice, bessMW, action, hora) {
   const bessGW = bessMW / 1000;
 
   if (action === "discharge") {
+    // BESS adds supply → walks DOWN the steep gas/peaker merit order
     const frac = Math.min(bessGW / Math.max(damGW, 0.3), 1.0);
     const steep = spotPrice > 60 ? 0.55 : spotPrice > 30 ? 0.65 : 0.8;
     const reduction = Math.pow(frac, steep);
     const floor = spotPrice * (1 - frac) * 0.3;
     return Math.max(0, spotPrice * (1 - reduction) + floor * reduction);
   } else {
-    // Charge: at solar hours supply curve is flat, minimal impact
-    // At night/evening, more impact
-    const totalSupGW = damGW + 15; // renewables + nuclear base
-    const frac = bessGW / Math.max(totalSupGW, 10);
-    const steep = spotPrice < 5 ? 0.05 : spotPrice < 20 ? 0.2 : 0.4;
-    return spotPrice + frac * steep * Math.max(spotPrice, 5);
+    // BESS adds demand → walks UP the supply curve from current clearing point
+    // Key insight: the supply curve is FLAT in the renewable zone (EUR 0-5 for ~15-20 GW)
+    // and only gets steep in the gas zone.
+    //
+    // If current price is low (solar hours), we're in the flat zone:
+    //   adding 10 GW of demand still stays in the flat renewable zone → minimal price lift
+    // If current price is high (evening), we're already in the steep zone:
+    //   adding demand walks further up → bigger lift, but capped by available capacity
+    //
+    // Model: estimate where on the supply curve we are, then walk up by bessGW
+
+    // Approximate renewable capacity available at this hour (GW above clearing)
+    const totalAvailGW = 25 + (hora >= 10 && hora <= 16 ? 15 : 5); // solar adds ~15 GW midday
+    const headroomGW = Math.max(totalAvailGW - (tgGW + 7), 0); // GW of cheap supply above clearing
+
+    if (bessGW <= headroomGW) {
+      // Still in the flat renewable zone → very small price increase
+      // Slope in flat zone: ~EUR 0.5-2 per GW
+      const flatSlope = spotPrice < 10 ? 0.3 : 0.8; // EUR/GW
+      return spotPrice + bessGW * flatSlope;
+    } else {
+      // Exceed the flat zone, enter the steeper part
+      const flatPart = headroomGW * 0.5; // cost of the flat portion
+      const steepGW = bessGW - headroomGW;
+      const steepFrac = steepGW / Math.max(damGW, 2);
+      // In the steep zone, each GW adds ~EUR 3-8 depending on how deep we go
+      const steepSlope = 3 + steepFrac * 10;
+      return spotPrice + flatPart + steepGW * steepSlope;
+    }
   }
 }
 
@@ -318,7 +342,7 @@ function simulateDay(date, slots, scores, bessMW, bessH, rt, cyclesDay) {
   const aMin = troughHour.sc.chgP; // what trough price becomes after BESS charge
 
   return { date, bMax, bMin, aMax, aMin,
-    bSpread: bMax - bMin, aSpread: Math.max(aMax - aMin / rt, 0),
+    bSpread: bMax - bMin, aSpread: Math.max(aMax - aMin, 0),
     rev, curvePct: Math.round(100 * curves / Math.max(hourData.length, 1)),
     trace, endSoc: soc };
 }
@@ -356,6 +380,8 @@ export default function App() {
   const [running, setRunning] = useState(false);
   const [runSt, setRunSt] = useState("");
   const [stripSc, setStripSc] = useState("1 GW");
+  const [curveHour, setCurveHour] = useState(21);
+  const [curveSc, setCurveSc] = useState("5 GW");
 
   const handlePriceFiles = useCallback(async files => {
     const arr = Array.from(files); let all = [], fail = 0;
@@ -632,10 +658,10 @@ export default function App() {
               ))}
             </div>
             <div className="flex gap-1 mb-3 flex-wrap">
-              {["strip", "shape", "spread", "revenue", "summary"].map(t => (
+              {["strip", "curves", "shape", "spread", "revenue", "summary"].map(t => (
                 <button key={t} onClick={() => setResultTab(t)}
                   className={"px-3 py-1 rounded-full text-xs font-semibold border transition-all " + (resultTab === t ? "bg-indigo-600 text-white" : "bg-white text-gray-500 hover:bg-indigo-50")}>
-                  {{ strip: "Strip", shape: "Shape", spread: "Spread", revenue: "Revenue", summary: "Summary" }[t]}
+                  {{ strip: "Strip", curves: "Curves", shape: "Shape", spread: "Spread", revenue: "Revenue", summary: "Summary" }[t]}
                 </button>
               ))}
             </div>
@@ -703,6 +729,198 @@ export default function App() {
                             </Bar>
                           </ComposedChart>
                         </ResponsiveContainer>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* CURVES — supply/demand intersection viewer */}
+              {resultTab === "curves" && (() => {
+                const sc = SCENARIOS.find(s => s.label === curveSc) || SCENARIOS[3];
+                const bessMW = sc.gw * 1000;
+                const allDates = Object.keys(daily).sort();
+
+                // Check if we have real curve data for this hour
+                const hasCurves = curveStacks && allDates.some(d => curveStacks[d]?.[curveHour]);
+
+                // Build synthetic merit order curves based on proxy model
+                // We create a representative supply curve for the selected hour
+                const avgSpot = allDates.reduce((s, d) => {
+                  const sl = (daily[d] || []).find(x => x.hora === curveHour);
+                  return sl ? { sum: s.sum + sl.price, n: s.n + 1 } : s;
+                }, { sum: 0, n: 0 });
+                const spotPrice = avgSpot.n > 0 ? avgSpot.sum / avgSpot.n : 40;
+
+                // Build a synthetic OMIE-like supply curve for visualization
+                const tgGW = THERMAL_GAP[curveHour] || 10;
+                const damGW = tgGW * 0.56;
+                const totalSupplyGW = damGW + 18; // renewables + nuclear + thermal
+
+                // Supply curve: renewable base (flat near 0), then ramp up through gas
+                const supPts = [];
+                // Nuclear: ~7 GW at EUR 0-5
+                for (let mw = 0; mw <= 7000; mw += 500) supPts.push({ mw, price: 1 + mw * 0.0003 });
+                // Renewables: variable by hour, at EUR 0-3
+                const reGW = Math.max(totalSupplyGW - damGW - 7, 0);
+                for (let mw = 7000; mw <= 7000 + reGW * 1000; mw += 500) supPts.push({ mw, price: 0 + (mw - 7000) * 0.001 });
+                const reEnd = 7000 + reGW * 1000;
+                // Hydro/imports: ~3 GW at EUR 10-35
+                for (let mw = reEnd; mw <= reEnd + 3000; mw += 300) supPts.push({ mw, price: 10 + (mw - reEnd) * 0.008 });
+                const hyEnd = reEnd + 3000;
+                // CCGT gas: the steep part — EUR 35-80+
+                const gasGW = Math.max(damGW - 3, 1);
+                for (let mw = hyEnd; mw <= hyEnd + gasGW * 1000; mw += 200) {
+                  const frac = (mw - hyEnd) / (gasGW * 1000);
+                  supPts.push({ mw, price: 35 + frac * frac * (spotPrice * 1.3 - 35) });
+                }
+                const gasEnd = hyEnd + gasGW * 1000;
+                // Peakers/oil: very steep, EUR 80-180
+                for (let mw = gasEnd; mw <= gasEnd + 2000; mw += 200) {
+                  supPts.push({ mw, price: spotPrice * 1.1 + (mw - gasEnd) * 0.05 });
+                }
+                const supEnd = gasEnd + 2000;
+
+                // Demand curve: starts high, drops — typical inelastic demand
+                const demPts = [];
+                const clearMW = gasEnd - 500; // approx where supply meets demand
+                for (let mw = 0; mw <= supEnd; mw += 300) {
+                  const price = mw < clearMW * 0.8 ? 180 - mw * 0.002
+                    : mw < clearMW * 1.2 ? spotPrice + (clearMW - mw) * 0.04
+                    : Math.max(0, spotPrice - (mw - clearMW) * 0.08);
+                  demPts.push({ mw, price: Math.max(price, -10) });
+                }
+
+                // BESS shifted curves
+                const supShifted = supPts.map(p => ({ mw: p.mw + bessMW, price: p.price })); // discharge: supply shifts right
+                const demShifted = demPts.map(p => ({ mw: p.mw + bessMW, price: p.price })); // charge: demand shifts right
+
+                // Find approximate clearing prices
+                const findClear = (sup, dem) => {
+                  for (let i = 0; i < sup.length; i++) {
+                    const s = sup[i];
+                    const dPt = dem.find(d => d.mw >= s.mw);
+                    if (dPt && s.price >= dPt.price) return { mw: s.mw, price: s.price };
+                  }
+                  return { mw: clearMW, price: spotPrice };
+                };
+
+                const baseClear = findClear(supPts, demPts);
+                const disClear = findClear(supShifted, demPts); // discharge: shifted supply vs base demand
+                const chgClear = findClear(supPts, demShifted); // charge: base supply vs shifted demand
+
+                // Price range for chart
+                const yMax = Math.min(Math.max(spotPrice * 2, 100), 200);
+                const xMax = supEnd + bessMW + 2000;
+
+                // Build combined data for recharts (use separate Line components with data prop)
+                const clipY = p => Math.max(-10, Math.min(yMax, p));
+
+                return (
+                  <div>
+                    <div className="flex gap-3 items-center mb-4 flex-wrap">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-semibold text-gray-600">Hour:</span>
+                        <select value={curveHour} onChange={e => setCurveHour(parseInt(e.target.value))}
+                          className="text-xs border rounded px-2 py-1 bg-white font-bold text-indigo-700">
+                          {Array.from({ length: 24 }, (_, i) => i + 1).map(h => (
+                            <option key={h} value={h}>H{h}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-semibold text-gray-600">BESS scenario:</span>
+                        <div className="flex gap-1">
+                          {SCENARIOS.filter(s => s.gw > 0).map(s => (
+                            <button key={s.label} onClick={() => setCurveSc(s.label)}
+                              className="text-xs px-2 py-0.5 rounded-full border font-semibold"
+                              style={curveSc === s.label ? { background: s.color, borderColor: s.color, color: "#fff" } : { borderColor: s.color, color: s.color }}>
+                              {s.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Discharge view: supply shift */}
+                    <div className="mb-6">
+                      <div className="text-xs font-semibold text-gray-700 mb-1">
+                        Discharge — BESS adds {sc.label} supply → peak price drops
+                      </div>
+                      <div className="text-xs text-gray-400 mb-2">
+                        H{curveHour} avg spot: EUR{fmt(spotPrice, 1)} · Thermal gap: {fmt(tgGW, 1)} GW (DAM: {fmt(damGW, 1)} GW)
+                      </div>
+                      <ResponsiveContainer width="100%" height={280}>
+                        <LineChart margin={{ top: 8, right: 12, left: 0, bottom: 8 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                          <XAxis dataKey="mw" type="number" domain={[0, xMax]} tick={{ fontSize: 8 }}
+                            tickFormatter={v => v >= 1000 ? (v / 1000).toFixed(0) + "k" : v} label={{ value: "MW", position: "insideBottomRight", fontSize: 9 }} />
+                          <YAxis type="number" domain={[-10, yMax]} tick={{ fontSize: 9 }} unit="€" width={36} />
+                          <Tooltip formatter={(v, n) => ["EUR" + (+v).toFixed(1), n]} labelFormatter={v => Number(v).toLocaleString() + " MW"} contentStyle={{ fontSize: 11 }} />
+                          <Legend wrapperStyle={{ fontSize: 10 }} />
+                          {/* Base supply */}
+                          <Line data={supPts.map(p => ({ mw: p.mw, price: clipY(p.price) }))} dataKey="price" name="Supply (base)"
+                            stroke="#94a3b8" strokeWidth={2} dot={false} type="monotone" />
+                          {/* Shifted supply (discharge) */}
+                          <Line data={supShifted.map(p => ({ mw: p.mw, price: clipY(p.price) }))} dataKey="price" name={"Supply + " + sc.label}
+                            stroke={sc.color} strokeWidth={2.5} dot={false} type="monotone" />
+                          {/* Demand */}
+                          <Line data={demPts.map(p => ({ mw: p.mw, price: clipY(p.price) }))} dataKey="price" name="Demand"
+                            stroke="#6366f1" strokeWidth={2} strokeDasharray="5 3" dot={false} type="monotone" />
+                          {/* Clearing points */}
+                          <ReferenceLine x={baseClear.mw} stroke="#94a3b8" strokeDasharray="3 3" strokeWidth={1} />
+                          <ReferenceLine y={baseClear.price} stroke="#94a3b8" strokeDasharray="3 3" strokeWidth={1} />
+                          <ReferenceLine x={disClear.mw} stroke={sc.color} strokeDasharray="3 3" strokeWidth={1} />
+                          <ReferenceLine y={disClear.price} stroke={sc.color} strokeDasharray="3 3" strokeWidth={1} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                      <div className="flex gap-6 text-xs mt-1">
+                        <span className="text-gray-500">Base clearing: <b>EUR{fmt(baseClear.price, 1)}</b> at {(baseClear.mw / 1000).toFixed(1)} GW</span>
+                        <span style={{ color: sc.color }}>With {sc.label}: <b>EUR{fmt(disClear.price, 1)}</b> at {(disClear.mw / 1000).toFixed(1)} GW
+                          <span className="text-gray-400 ml-1">({fmt((disClear.price - baseClear.price) / baseClear.price * 100, 0)}%)</span></span>
+                      </div>
+                    </div>
+
+                    {/* Charge view: demand shift */}
+                    <div>
+                      <div className="text-xs font-semibold text-gray-700 mb-1">
+                        Charge — BESS adds {sc.label} demand → trough price lifts
+                      </div>
+                      <ResponsiveContainer width="100%" height={280}>
+                        <LineChart margin={{ top: 8, right: 12, left: 0, bottom: 8 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                          <XAxis dataKey="mw" type="number" domain={[0, xMax]} tick={{ fontSize: 8 }}
+                            tickFormatter={v => v >= 1000 ? (v / 1000).toFixed(0) + "k" : v} label={{ value: "MW", position: "insideBottomRight", fontSize: 9 }} />
+                          <YAxis type="number" domain={[-10, yMax]} tick={{ fontSize: 9 }} unit="€" width={36} />
+                          <Tooltip formatter={(v, n) => ["EUR" + (+v).toFixed(1), n]} labelFormatter={v => Number(v).toLocaleString() + " MW"} contentStyle={{ fontSize: 11 }} />
+                          <Legend wrapperStyle={{ fontSize: 10 }} />
+                          {/* Supply */}
+                          <Line data={supPts.map(p => ({ mw: p.mw, price: clipY(p.price) }))} dataKey="price" name="Supply"
+                            stroke="#94a3b8" strokeWidth={2} dot={false} type="monotone" />
+                          {/* Base demand */}
+                          <Line data={demPts.map(p => ({ mw: p.mw, price: clipY(p.price) }))} dataKey="price" name="Demand (base)"
+                            stroke="#6366f1" strokeWidth={2} strokeDasharray="5 3" dot={false} type="monotone" />
+                          {/* Shifted demand (charge) */}
+                          <Line data={demShifted.map(p => ({ mw: p.mw, price: clipY(p.price) }))} dataKey="price" name={"Demand + " + sc.label}
+                            stroke={sc.color} strokeWidth={2.5} strokeDasharray="5 3" dot={false} type="monotone" />
+                          {/* Clearing points */}
+                          <ReferenceLine x={baseClear.mw} stroke="#94a3b8" strokeDasharray="3 3" strokeWidth={1} />
+                          <ReferenceLine y={baseClear.price} stroke="#94a3b8" strokeDasharray="3 3" strokeWidth={1} />
+                          <ReferenceLine x={chgClear.mw} stroke={sc.color} strokeDasharray="3 3" strokeWidth={1} />
+                          <ReferenceLine y={chgClear.price} stroke={sc.color} strokeDasharray="3 3" strokeWidth={1} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                      <div className="flex gap-6 text-xs mt-1">
+                        <span className="text-gray-500">Base clearing: <b>EUR{fmt(baseClear.price, 1)}</b></span>
+                        <span style={{ color: sc.color }}>With {sc.label} charging: <b>EUR{fmt(chgClear.price, 1)}</b>
+                          <span className="text-gray-400 ml-1">(+{fmt((chgClear.price - baseClear.price) / Math.max(baseClear.price, 0.1) * 100, 0)}%)</span></span>
+                      </div>
+                    </div>
+
+                    {hasCurves && (
+                      <div className="mt-4 text-xs text-green-600 bg-green-50 rounded p-2">
+                        Real curve data available for some days at H{curveHour}. The charts above use the synthetic proxy model for illustration.
+                        Simulation results use real curves where available.
                       </div>
                     )}
                   </div>
