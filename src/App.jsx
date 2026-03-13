@@ -825,29 +825,79 @@ export default function App() {
                 const actLabel = dominantAct === "discharge" ? "Discharging" : dominantAct === "charge" ? "Charging" : "Idle";
                 const actColor = AC[dominantAct];
 
+                // Compute activity heatmap for all 24 hours
+                const hourActivity = Array.from({ length: 24 }, (_, i) => {
+                  const h = i + 1;
+                  const votes = { charge: 0, discharge: 0, idle: 0, total: 0 };
+                  if (sc.gw > 0 && simRes?.[sc.label]) {
+                    simRes[sc.label].forEach(r => {
+                      const t = r.trace?.find(t => t.hora === h);
+                      if (t) { votes[t.act]++; votes.total++; }
+                    });
+                  }
+                  const chgPct = votes.total > 0 ? votes.charge / votes.total : 0;
+                  const disPct = votes.total > 0 ? votes.discharge / votes.total : 0;
+                  const idlePct = 1 - chgPct - disPct;
+                  const dominant = disPct > chgPct ? (disPct > idlePct ? "discharge" : "idle") : (chgPct > idlePct ? "charge" : "idle");
+                  const intensity = Math.max(chgPct, disPct); // 0-1 how active
+                  return { h, chgPct, disPct, idlePct, dominant, intensity, votes };
+                });
+
                 return (
                   <div>
-                    <div className="flex gap-3 items-center mb-3 flex-wrap">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-semibold text-gray-600">Hour:</span>
-                        <select value={curveHour} onChange={e => setCurveHour(parseInt(e.target.value))}
-                          className="text-xs border rounded px-2 py-1 bg-white font-bold text-indigo-700">
-                          {Array.from({ length: 24 }, (_, i) => i + 1).map(h => (
-                            <option key={h} value={h}>H{h}</option>
-                          ))}
-                        </select>
+                    <div className="flex items-center gap-2 mb-3 flex-wrap">
+                      <span className="text-xs font-semibold text-gray-600">Scenario:</span>
+                      <div className="flex gap-1">
+                        {SCENARIOS.filter(s => s.gw > 0).map(s => (
+                          <button key={s.label} onClick={() => setCurveSc(s.label)}
+                            className="text-xs px-2 py-0.5 rounded-full border font-semibold"
+                            style={curveSc === s.label ? { background: s.color, borderColor: s.color, color: "#fff" } : { borderColor: s.color, color: s.color }}>
+                            {s.label}
+                          </button>
+                        ))}
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-semibold text-gray-600">Scenario:</span>
-                        <div className="flex gap-1">
-                          {SCENARIOS.filter(s => s.gw > 0).map(s => (
-                            <button key={s.label} onClick={() => setCurveSc(s.label)}
-                              className="text-xs px-2 py-0.5 rounded-full border font-semibold"
-                              style={curveSc === s.label ? { background: s.color, borderColor: s.color, color: "#fff" } : { borderColor: s.color, color: s.color }}>
-                              {s.label}
+                    </div>
+
+                    {/* Hour selector heatmap */}
+                    <div className="mb-4">
+                      <div className="text-xs font-semibold text-gray-600 mb-1.5">Select hour — colour shows BESS activity</div>
+                      <div className="flex gap-0.5">
+                        {hourActivity.map(ha => {
+                          const isSelected = ha.h === curveHour;
+                          let bg, textCol;
+                          if (ha.dominant === "discharge") {
+                            bg = `rgba(239,68,68,${0.15 + ha.intensity * 0.7})`; // red
+                            textCol = ha.intensity > 0.4 ? "#fff" : "#b91c1c";
+                          } else if (ha.dominant === "charge") {
+                            bg = `rgba(16,185,129,${0.15 + ha.intensity * 0.7})`; // green
+                            textCol = ha.intensity > 0.4 ? "#fff" : "#065f46";
+                          } else {
+                            bg = "#f1f5f9"; // gray for idle
+                            textCol = "#94a3b8";
+                          }
+                          return (
+                            <button key={ha.h} onClick={() => setCurveHour(ha.h)}
+                              className="flex-1 py-1.5 rounded text-center transition-all relative"
+                              style={{
+                                background: isSelected ? "#312e81" : bg,
+                                color: isSelected ? "#fff" : textCol,
+                                fontSize: 10,
+                                fontWeight: isSelected ? 800 : 600,
+                                outline: isSelected ? "2px solid #6366f1" : "none",
+                                outlineOffset: 1,
+                                minWidth: 0,
+                              }}>
+                              {ha.h}
                             </button>
-                          ))}
-                        </div>
+                          );
+                        })}
+                      </div>
+                      <div className="flex gap-4 mt-1.5 text-xs text-gray-400 justify-center">
+                        <span className="flex items-center gap-1"><span className="w-3 h-2.5 rounded-sm inline-block" style={{ background: "rgba(239,68,68,0.6)" }} />Discharge</span>
+                        <span className="flex items-center gap-1"><span className="w-3 h-2.5 rounded-sm inline-block" style={{ background: "rgba(16,185,129,0.6)" }} />Charge</span>
+                        <span className="flex items-center gap-1"><span className="w-3 h-2.5 rounded-sm inline-block" style={{ background: "#f1f5f9" }} />Idle</span>
+                        <span className="text-gray-300">|</span>
+                        <span>Darker = more frequent</span>
                       </div>
                     </div>
 
