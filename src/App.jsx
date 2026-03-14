@@ -424,7 +424,7 @@ export default function App() {
         return r.json(); // browser auto-decompresses gzip if served with correct headers
       });
 
-    tryLoad("https://bess-simulator-spain.vercel.app/omie_data.json.gz")
+    tryLoad("/omie_data.json.gz")
       .catch(() => tryLoad("https://bess-simulator-spain.vercel.app/omie_data.json"))
       .then(data => {
         const { slots, stacks } = ingestPreloadedData(data, solveIntersection);
