@@ -365,8 +365,8 @@ export default function App() {
         return r.json(); // browser auto-decompresses gzip if served with correct headers
       });
 
-    tryLoad("/omie_data.json.gz")
-      .catch(() => tryLoad("/omie_data.json"))
+    tryLoad("https://bess-simulator-spain.vercel.app/omie_data.json.gz")
+      .catch(() => tryLoad("https://bess-simulator-spain.vercel.app/omie_data.json"))
       .then(data => {
         const { slots, stacks } = ingestPreloadedData(data, solveIntersection);
         setPriceSlots(slots);
@@ -822,8 +822,7 @@ export default function App() {
                 <table className="w-full text-xs">
                   <thead><tr className="text-gray-400 border-b">
                     {["Scenario", "GW", "Avg max", "Δ", "Avg min", "Δ", "Spread", "Δ", "Annual rev"].map(h => (
-                      <th key={h} className="pb-1 text-left pr-3 font-medium">{h}</th>))}
-                  </tr></thead>
+                      <th key={h} className="pb-1 text-left pr-3 font-medium">{h}</th>))}</tr></thead>
                   <tbody>
                     {stats.map((sc, i) => (
                       <tr key={sc.label} className="border-b hover:bg-gray-50">
@@ -838,7 +837,7 @@ export default function App() {
                         <td className="font-mono font-bold pr-3" style={{ color: sc.color }}>EUR{fmt(sc.avgSpread, 1)}</td>
                         <td className={"pr-3 " + (i > 0 ? (sc.avgSpread < base.avgSpread ? "text-red-500" : "text-green-600") : "text-gray-300")}>
                           {i === 0 ? "--" : fmt((sc.avgSpread - base.avgSpread) / base.avgSpread * 100, 1) + "%"}</td>
-                        <td className={"font-mono " + (sc.annRev > 0 ? "text-green-700" : "text-gray-400")}>
+                        <td className={"font-mono " + (sc.annRev > 0 ? "text-green-700" : "text-red-500")}>
                           {sc.gw === 0 ? "--" : fmtE(sc.annRev)}</td>
                       </tr>
                     ))}
@@ -862,8 +861,7 @@ export default function App() {
                 <table className="w-full text-xs bg-white border rounded-xl overflow-hidden">
                   <thead><tr className="bg-gray-50 border-b">
                     {["Scenario", "Capacity", "CAPEX", "OPEX/yr", "Revenue/yr", "EBITDA", "Payback"].map(h => (
-                      <th key={h} className="p-2 text-left font-semibold text-gray-500">{h}</th>))}
-                  </tr></thead>
+                      <th key={h} className="p-2 text-left font-semibold text-gray-500">{h}</th>))}</tr></thead>
                   <tbody>
                     {stats.filter(sc => sc.gw > 0).map(sc => {
                       const kWh = sc.gw * 1000 * bessH * 1000;
