@@ -2592,14 +2592,12 @@ export default function App() {
                 </div>
               </div>
             </div>
-           )}
+          )}
 
-         <div className="mt-3 text-xs text-gray-300 text-center">
+        <div className="mt-3 text-xs text-gray-300 text-center">
           BESS Simulator v20 · OMIE · Hourly · Non-linear merit order · Daily dispatch
         </div>
       </div>
     </div>
   );
 }
-
-
