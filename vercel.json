@@ -1,0 +1,11 @@
+{
+  "headers": [
+    {
+      "source": "/omie_data.json.gz",
+      "headers": [
+        { "key": "Content-Type", "value": "application/json" },
+        { "key": "Content-Encoding", "value": "gzip" }
+      ]
+    }
+  ]
+}
