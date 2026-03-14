@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import {
   LineChart, Line, BarChart, Bar, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
@@ -1198,7 +1198,7 @@ export default function App() {
                           <Tooltip formatter={(v, n) => [v + " GW", n]} contentStyle={{ fontSize: 11 }} />
                           <Legend wrapperStyle={{ fontSize: 10 }} />
                           <Bar dataKey="residual" name="Thermal gap (base)" fill="#fca5a5" radius={[2, 2, 0, 0]} isAnimationActive={false} />
-                          {SCENARIOS.filter(s => s.gw > 0).forEach(sc => (
+                          {SCENARIOS.filter(s => s.gw > 0).map(sc => (
                             <Line key={sc.label} type="monotone" dataKey={sc.label} name={"With " + sc.label}
                               stroke={sc.color} strokeWidth={1.5} strokeDasharray="4 2" dot={false} />
                           ))}
