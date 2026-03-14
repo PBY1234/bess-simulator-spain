@@ -405,29 +405,37 @@ export default function App() {
 
   // ── Auto-load reference year on startup ──────────────────────────────────
   useEffect(() => {
-    // Try .gz first, fall back to .json
+    // tryLoad uses root-relative paths to leverage Vercel's /public mapping
     const tryLoad = (url) =>
       fetch(url).then(r => {
-        if (!r.ok) throw new Error(r.status);
-        return r.json(); // browser auto-decompresses gzip if served with correct headers
+        if (!r.ok) throw new Error(`Status: ${r.status}`);
+        return r.json(); 
+        // Note: browser auto-decompresses .gz because of your vercel.json headers
       });
 
-    tryLoad("https://bess-simulator-spain.vercel.app/omie_data.json.gz")
-      .catch(() => tryLoad("https://bess-simulator-spain.vercel.app/omie_data.json"))
+    // We use "/filename" which points to the "public" folder automatically
+    tryLoad("/omie_data.json.gz")
+      .catch((err) => {
+        console.warn("Gzip load failed or not found, trying raw JSON...", err);
+        return tryLoad("/omie_data.json");
+      })
       .then(data => {
         const { slots, stacks } = ingestPreloadedData(data, solveIntersection);
         setPriceSlots(slots);
+        
         const nd = new Set(slots.map(s => s.date)).size;
-        setPriceStatus("2024 reference year · " + nd + " days · pre-loaded");
+        setPriceStatus(`2024 reference year · ${nd} days · pre-loaded`);
+        
         if (stacks) {
           setCurveStacks(stacks);
-          setCurveStatus("Pre-loaded · " + Object.keys(stacks).length + " days with curves");
+          setCurveStatus(`Pre-loaded · ${Object.keys(stacks).length} days with curves`);
         }
+        
         setPreloadStatus("done");
         setTab("simulate");
       })
       .catch(err => {
-        console.warn("Could not load preloaded data:", err);
+        console.error("Critical: Could not load preloaded data:", err);
         setPreloadStatus("error");
       });
   }, []);
