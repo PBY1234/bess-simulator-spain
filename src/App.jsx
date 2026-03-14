@@ -439,7 +439,7 @@ async function loadDefaultOMIE() {
 
   console.log("Loading OMIE dataset...");
 
-  const res = await fetch("/omie_data.json.gz");
+  const res = await fetch("/omie_data2.json");
 
   console.log("Fetch status:", res.status);
 
