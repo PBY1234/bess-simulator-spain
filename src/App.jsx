@@ -436,28 +436,27 @@ function simulateDay(date, slots, scores, bessMW, bessH, rt, cyclesDay) {
 
 /* ═══════════════ LOAD DEFAULT OMIE DATA ═══════════════ */
 async function loadDefaultOMIE() {
-  try {
-    const res = await fetch("/omie_data.json.gz");
 
-    if (!res.ok) throw new Error("Failed to fetch OMIE dataset");
+  console.log("Loading OMIE dataset...");
 
-    const data = await res.json();
+  const res = await fetch("/omie_data.json.gz");
 
-    const slots = data.map(r => ({
-      date: r.date,
-      hora: Number(r.hora),
-      price: Number(r.price)
-    }));
+  console.log("Fetch status:", res.status);
 
-    return {
-      slots,
-      note: slots.length + " hourly slots loaded from GitHub dataset"
-    };
+  const blob = await res.blob();
+  const text = await blob.text();
 
-  } catch (err) {
-    console.error("OMIE load error:", err);
-    return { slots: [], note: "Failed loading omie_data.json.gz" };
-  }
+  const data = JSON.parse(text);
+
+  console.log("Loaded rows:", data.length);
+
+  const slots = data.map(r => ({
+    date: r.date,
+    hora: Number(r.hora),
+    price: Number(r.price)
+  }));
+
+  return { slots };
 }
 
 /* ═══════════════ UI COMPONENTS ═══════════════ */
